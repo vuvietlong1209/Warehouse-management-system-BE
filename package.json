@@ -1,0 +1,29 @@
+{
+  "name": "ewarehouse-backend",
+  "version": "1.0.0",
+  "description": "Backend API cho Hệ thống quản lý kho",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "data:audit-weekly": "node scripts/audit-weekly-demand.js",
+    "forecast:smoke": "node scripts/smoke-forecast-models.js",
+    "forecast:analyze": "node scripts/analyze-forecasting.js",
+    "forecast:audit-errors": "node scripts/audit-forecast-errors.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "db:check": "node scripts/check-schema.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "docx": "^9.8.1",
+    "dotenv": "^16.4.5",
+    "exceljs": "4.4.0",
+    "express": "^4.19.2",
+    "mssql": "^11.0.1",
+    "pdfkit": "^0.20.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}

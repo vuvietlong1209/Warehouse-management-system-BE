@@ -1,0 +1,34 @@
+# Dependencies and generated output
+node_modules/
+coverage/
+.nyc_output/
+dist/
+build/
+*.tsbuildinfo
+
+# Real configuration and private keys; keep example templates
+.env*
+!.env.example
+!.env.local.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Operating data is transferred separately, not committed as source
+backups/
+outputs/
+*.bak
+*.trn
+*.mdf
+*.ndf
+*.ldf
+
+# Logs and local editor/OS files
+*.log
+*.tmp
+*.temp
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
