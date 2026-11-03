@@ -247,7 +247,6 @@ CREATE TABLE dbo.[stock_movements] (
     [description] NVARCHAR(192) NULL,
     [created_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movements_created_at] DEFAULT (getdate()),
     [updated_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movements_updated_at] DEFAULT (getdate()),
-    [source_document_id] INT NULL,
     [request_key] UNIQUEIDENTIFIER NOT NULL,
     [request_hash] VARCHAR(64) NOT NULL,
     CONSTRAINT [PK_stock_movements] PRIMARY KEY CLUSTERED ([id]),
@@ -277,7 +276,6 @@ CREATE TABLE dbo.[stock_movement_details] (
     [unit_price] DECIMAL(18,2) NOT NULL,
     [inventory_value] DECIMAL(18,2) NOT NULL,
     [cost_price] DECIMAL(18,2) NOT NULL CONSTRAINT [DF_stock_movement_details_cost_price] DEFAULT ((0)),
-    [source_detail_id] INT NULL,
     [created_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movement_details_created_at] DEFAULT (getdate()),
     [updated_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movement_details_updated_at] DEFAULT (getdate()),
     CONSTRAINT [PK_stock_movement_details] PRIMARY KEY CLUSTERED ([id]),
@@ -300,9 +298,7 @@ GO
 CREATE TABLE dbo.[payments] (
     [id] INT IDENTITY(1,1) NOT NULL,
     [code] NVARCHAR(24) NOT NULL,
-    [partner_id] INT NOT NULL,
     [user_id] INT NOT NULL,
-    [direction] VARCHAR(3) NOT NULL,
     [purpose] VARCHAR(12) NOT NULL,
     [security_action] VARCHAR(8) NULL,
     [amount] DECIMAL(18,2) NOT NULL,
@@ -312,10 +308,10 @@ CREATE TABLE dbo.[payments] (
     [refund_of_id] INT NULL,
     [request_key] UNIQUEIDENTIFIER NOT NULL,
     [created_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_payments_created_at] DEFAULT (getdate()),
-    [request_hash] VARCHAR(64) NULL,
+    [request_hash] VARCHAR(64) NOT NULL,
     [goods_receipt_id] INT NULL,
     [goods_issue_id] INT NULL,
-    [sequence_no] INT NULL,
+    [sequence_no] INT NOT NULL,
     [operation_status] VARCHAR(12) NOT NULL CONSTRAINT [DF_payments_operation_status] DEFAULT ('Pending'),
     [confirmed_by] INT NULL,
     [confirmed_at] DATETIME2(7) NULL,
@@ -325,7 +321,6 @@ CREATE TABLE dbo.[payments] (
     CONSTRAINT [UQ_payments_code] UNIQUE NONCLUSTERED ([code]),
     CONSTRAINT [UQ_payments_request_key] UNIQUE NONCLUSTERED ([request_key]),
     CONSTRAINT [CK_payments_1] CHECK ([amount]>(0)),
-    CONSTRAINT [CK_payments_2] CHECK ([direction]='OUT' OR [direction]='IN'),
     CONSTRAINT [CK_payments_3] CHECK ([purpose]='REFUND' OR [purpose]='SECURITY' OR [purpose]='ADVANCE' OR [purpose]='PAYMENT'),
     CONSTRAINT [CK_payments_security_action] CHECK ([security_action] IS NULL OR ([purpose]='SECURITY' AND [operation_status]='Confirmed' AND [security_action] IN ('KEEP','APPLY'))),
     CONSTRAINT [CK_payment_document] CHECK ([goods_receipt_id] IS NOT NULL AND [goods_issue_id] IS NULL OR [goods_receipt_id] IS NULL AND [goods_issue_id] IS NOT NULL),
@@ -333,7 +328,6 @@ CREATE TABLE dbo.[payments] (
     CONSTRAINT [FK_payments_confirmed_by] FOREIGN KEY ([confirmed_by]) REFERENCES dbo.[users] ([id]),
     CONSTRAINT [FK_payments_goods_receipt_id] FOREIGN KEY ([goods_receipt_id]) REFERENCES dbo.[goods_receipts] ([id]),
     CONSTRAINT [FK_payments_goods_issue_id] FOREIGN KEY ([goods_issue_id]) REFERENCES dbo.[goods_issues] ([id]),
-    CONSTRAINT [FK_payments_partner_id] FOREIGN KEY ([partner_id]) REFERENCES dbo.[partners] ([id]),
     CONSTRAINT [FK_payments_refund_of_id] FOREIGN KEY ([refund_of_id]) REFERENCES dbo.[payments] ([id]),
     CONSTRAINT [FK_payments_user_id] FOREIGN KEY ([user_id]) REFERENCES dbo.[users] ([id])
 );
@@ -377,14 +371,14 @@ GO
 CREATE VIEW dbo.issue_transaction_details AS
  SELECT d.id,d.stock_movement_id goods_issue_id,d.goods_issue_detail_id root_detail_id,d.item_id,d.bin_id,d.quantity quantity_ordered,
  d.unit_price,d.cost_price,d.created_at,d.updated_at,
- COALESCE(d.source_detail_id,d.id+100000000) ledger_line_id
+ d.id ledger_line_id
  FROM dbo.stock_movement_details d JOIN dbo.stock_movements m ON m.id=d.stock_movement_id WHERE m.operation_kind='ISSUE';
 GO
 
 CREATE VIEW dbo.issue_transactions AS
  SELECT m.id,m.goods_issue_id root_id,m.code,m.operation_date order_date,h.warehouse_id,h.partner_id,m.user_id,m.description,
  m.operation_status issue_status,h.status,m.created_at,m.updated_at,m.confirmed_at,m.rejected_at,
- COALESCE(m.source_document_id,m.id+100000000) ledger_order_id
+ m.id ledger_order_id
  FROM dbo.stock_movements m JOIN dbo.goods_issues h ON h.id=m.goods_issue_id WHERE m.operation_kind='ISSUE';
 GO
 
@@ -392,14 +386,14 @@ CREATE VIEW dbo.receipt_transaction_details AS
  SELECT d.id,d.stock_movement_id goods_receipt_id,d.goods_receipt_detail_id root_detail_id,d.item_id,d.bin_id,d.quantity quantity_ordered,
  CAST(CASE WHEN d.quantity=0 THEN 0 ELSE d.inventory_value/d.quantity END AS DECIMAL(18,2)) unit_price,
  d.unit_price commercial_unit_price,d.inventory_value,d.paid_quantity,d.bonus_quantity,d.created_at,d.updated_at,
- COALESCE(d.source_detail_id,d.id+100000000) ledger_line_id
+ d.id ledger_line_id
  FROM dbo.stock_movement_details d JOIN dbo.stock_movements m ON m.id=d.stock_movement_id WHERE m.operation_kind='RECEIPT';
 GO
 
 CREATE VIEW dbo.receipt_transactions AS
  SELECT m.id,m.goods_receipt_id root_id,m.code,m.operation_date order_date,h.warehouse_id,h.partner_id,m.user_id,m.description,
  m.operation_status receipt_status, h.status,m.created_at,m.updated_at,m.confirmed_at,m.rejected_at,
- COALESCE(m.source_document_id,m.id+100000000) ledger_order_id
+ m.id ledger_order_id
  FROM dbo.stock_movements m JOIN dbo.goods_receipts h ON h.id=m.goods_receipt_id WHERE m.operation_kind='RECEIPT';
 GO
 

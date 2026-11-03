@@ -22,13 +22,13 @@ async function createPayment(tx,kind,id,body,user,editId=null){
   const purpose=body.purpose||'PAYMENT';if(!['PAYMENT','ADVANCE','SECURITY','REFUND'].includes(purpose))throw httpError(400,'Loại giao dịch không hợp lệ');
   const p={amount:amount(body.amount,'Số tiền',true),purpose,refund_of_id:purpose==='REFUND'?requirePositiveId(body.refund_of_id,'Khoản gốc'):null};await checkPayment(tx,h,c,p,editId);
   const n=(await tx.request().input('id',sql.Int,h.id).query(`SELECT ISNULL(MAX(sequence_no),0)+1 n FROM payments WHERE ${c.fk}=@id`)).recordset[0].n;
-  const direction=c.r?'OUT':'IN',code=String(body.code||`TC-${Date.now().toString(36).toUpperCase()}-${n}`).slice(0,24);
-  const q=tx.request().input('code',sql.NVarChar(24),code).input('root',sql.Int,id).input('n',sql.Int,n).input('partner',sql.Int,h.partner_id).input('user',sql.Int,user)
-    .input('dir',sql.VarChar(3),purpose==='REFUND'?(direction==='IN'?'OUT':'IN'):direction).input('purpose',sql.VarChar(12),purpose).input('a',sql.Decimal(18,2),p.amount)
+  const code=String(body.code||`TC-${Date.now().toString(36).toUpperCase()}-${n}`).slice(0,24);
+  const q=tx.request().input('code',sql.NVarChar(24),code).input('root',sql.Int,id).input('n',sql.Int,n).input('user',sql.Int,user)
+    .input('purpose',sql.VarChar(12),purpose).input('a',sql.Decimal(18,2),p.amount)
     .input('date',sql.Date,requireDate(body.payment_date)).input('method',sql.NVarChar(32),String(body.method||'Chuyển khoản').slice(0,32)).input('note',sql.NVarChar(192),String(body.note||'').slice(0,192))
     .input('refund',sql.Int,p.refund_of_id).input('key',sql.UniqueIdentifier,request).input('hash',sql.VarChar(64),fingerprint);
-  if(editId){await q.input('id',sql.Int,editId).query('UPDATE payments SET direction=@dir,purpose=@purpose,amount=@a,payment_date=@date,method=@method,note=@note,refund_of_id=@refund,request_hash=@hash WHERE id=@id');return editId;}
-  return(await q.query(`INSERT payments(code,${c.fk},sequence_no,partner_id,user_id,direction,purpose,amount,payment_date,method,note,refund_of_id,request_key,request_hash) OUTPUT inserted.id VALUES(@code,@root,@n,@partner,@user,@dir,@purpose,@a,@date,@method,@note,@refund,@key,@hash)`)).recordset[0].id;
+  if(editId){await q.input('id',sql.Int,editId).query('UPDATE payments SET purpose=@purpose,amount=@a,payment_date=@date,method=@method,note=@note,refund_of_id=@refund,request_hash=@hash WHERE id=@id');return editId;}
+  return(await q.query(`INSERT payments(code,${c.fk},sequence_no,user_id,purpose,amount,payment_date,method,note,refund_of_id,request_key,request_hash) OUTPUT inserted.id VALUES(@code,@root,@n,@user,@purpose,@a,@date,@method,@note,@refund,@key,@hash)`)).recordset[0].id;
 }
 async function confirmPayment(tx,id,user,body={}){
   const p=(await tx.request().input('id',sql.Int,id).query('SELECT * FROM payments WITH(UPDLOCK,HOLDLOCK) WHERE id=@id')).recordset[0];if(!p||p.operation_status!=='Pending')throw httpError(409,'Khoản tiền không còn chờ xác nhận');

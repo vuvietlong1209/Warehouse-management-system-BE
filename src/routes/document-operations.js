@@ -5,6 +5,7 @@ const {httpError,requirePositiveId}=require('../validation');
 const ops=require('../document-operations');
 const {createPayment,confirmPayment}=require('../document-payments');
 const {rebalanceReservations}=require('../document-reservations');
+const {withPaymentContext}=require('../payment-accounting');
 const error=(res,e)=>res.status(e.number===2601||e.number===2627?409:e.status||500).json({success:false,message:e.number===2601||e.number===2627?'Mã yêu cầu đã tồn tại':e.message,code:e.code,impact:e.impact});
 const handle=fn=>async(req,res)=>{try{res.json(await fn(req));}catch(e){error(res,e);}};
 router.get('/movements/:id',handle(async req=>{
@@ -15,7 +16,7 @@ router.get('/movements/:id',handle(async req=>{
   return{...m,root:h};
 }));
 router.put('/movements/:id',handle(req=>ops.write(async tx=>{const m=(await tx.request().input('id',sql.Int,requirePositiveId(req.params.id,'Lần')).query('SELECT * FROM stock_movements WHERE id=@id')).recordset[0];if(!m)throw httpError(404,'Không tìm thấy lần');await ops.saveMovement(tx,m.goods_receipt_id?'receipt':'issue',m.goods_receipt_id||m.goods_issue_id,req.body,req.user.id,m.id);return{success:true};})));
-router.get('/payments/:id',handle(async req=>{const pool=await getPool(),p=(await pool.request().input('id',sql.Int,requirePositiveId(req.params.id,'Khoản tiền')).query('SELECT p.*,original.purpose refund_of_purpose,original.security_action refund_of_security_action,original.code refund_of_code,u.name user_name,v.name confirmed_name FROM payments p LEFT JOIN payments original ON original.id=p.refund_of_id JOIN users u ON u.id=p.user_id LEFT JOIN users v ON v.id=p.confirmed_by WHERE p.id=@id')).recordset[0];if(!p)throw httpError(404,'Không tìm thấy khoản tiền');return{...p,root:await ops.document(pool,p.goods_receipt_id?'receipt':'issue',p.goods_receipt_id||p.goods_issue_id)};}));
+router.get('/payments/:id',handle(async req=>{const pool=await getPool(),p=(await pool.request().input('id',sql.Int,requirePositiveId(req.params.id,'Khoản tiền')).query('SELECT p.*,original.purpose refund_of_purpose,original.security_action refund_of_security_action,original.code refund_of_code,u.name user_name,v.name confirmed_name FROM payments p LEFT JOIN payments original ON original.id=p.refund_of_id JOIN users u ON u.id=p.user_id LEFT JOIN users v ON v.id=p.confirmed_by WHERE p.id=@id')).recordset[0];if(!p)throw httpError(404,'Không tìm thấy khoản tiền');const root=await ops.document(pool,p.goods_receipt_id?'receipt':'issue',p.goods_receipt_id||p.goods_issue_id);return{...withPaymentContext(p,root.partner_id),root};}));
 router.put('/payments/:id',handle(req=>ops.write(async tx=>{const p=(await tx.request().input('id',sql.Int,requirePositiveId(req.params.id,'Khoản tiền')).query('SELECT * FROM payments WHERE id=@id')).recordset[0];if(!p)throw httpError(404,'Không tìm thấy khoản tiền');await createPayment(tx,p.goods_receipt_id?'receipt':'issue',p.goods_receipt_id||p.goods_issue_id,req.body,req.user.id,p.id);return{success:true};})));
 router.post('/movements/:id/confirm',handle(req=>ops.write(async tx=>{const method=String(req.body.costing_method||'AVERAGE').toUpperCase();if(!['AVERAGE'].includes(method))throw httpError(400,'Phương pháp giá vốn không hợp lệ');await ops.confirmMovement(tx,requirePositiveId(req.params.id,'Lần'),req.user.id,method);return{success:true};})));
 router.post('/payments/:id/confirm',handle(req=>ops.write(async tx=>({success:true,...await confirmPayment(tx,requirePositiveId(req.params.id,'Khoản tiền'),req.user.id,req.body)}))));
@@ -33,7 +34,7 @@ for(const [path,table]of [['movements','stock_movements'],['payments','payments'
   })));
   router.delete(`/${path}/:id`,handle(req=>ops.write(async tx=>{
     const id=requirePositiveId(req.params.id,'Lần'),row=await editableOperation(tx,id);
-    if(!['Pending','Rejected','Cancelled'].includes(row.operation_status)||row.confirmed_at||row.source_document_id)throw httpError(409,'Không thể xóa lần đã được xác nhận');
+    if(!['Pending','Rejected','Cancelled'].includes(row.operation_status)||row.confirmed_at)throw httpError(409,'Không thể xóa lần đã được xác nhận');
     if(path==='payments'){
       if((await tx.request().input('id',sql.Int,id).query('SELECT TOP 1 id FROM payments WHERE refund_of_id=@id')).recordset.length)throw httpError(409,'Không thể xóa khoản tiền đã có giao dịch hoàn trả');
     }else await tx.request().input('id',sql.Int,id).query('DELETE FROM stock_movement_details WHERE stock_movement_id=@id');

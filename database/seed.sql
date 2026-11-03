@@ -108,46 +108,47 @@ INSERT INTO [inventory_check_details] ([inventory_check_id], [check_detail_code]
 (1, N'KKCT-02', 6, 3,   28,   30, -2, 1);  -- RTX 4090 lệch -2
 GO
 
+
 INSERT dbo.stock_movements
     (code,sequence_no,operation_kind,goods_receipt_id,operation_date,operation_status,
-     user_id,confirmed_by,confirmed_at,source_document_id,request_key,request_hash)
-SELECT code,1,'RECEIPT',id,order_date,'Confirmed',user_id,user_id,activated_at,id,NEWID(),'demo-seed'
+     user_id,confirmed_by,confirmed_at,request_key,request_hash)
+SELECT code,1,'RECEIPT',id,order_date,'Confirmed',user_id,user_id,activated_at,NEWID(),'demo-seed'
 FROM dbo.goods_receipts;
 
 INSERT dbo.stock_movements
     (code,sequence_no,operation_kind,goods_issue_id,operation_date,operation_status,
-     user_id,confirmed_by,confirmed_at,source_document_id,request_key,request_hash)
-SELECT code,1,'ISSUE',id,order_date,'Confirmed',user_id,user_id,activated_at,id,NEWID(),'demo-seed'
+     user_id,confirmed_by,confirmed_at,request_key,request_hash)
+SELECT code,1,'ISSUE',id,order_date,'Confirmed',user_id,user_id,activated_at,NEWID(),'demo-seed'
 FROM dbo.goods_issues;
 
 INSERT dbo.stock_movement_details
     (stock_movement_id,goods_receipt_detail_id,item_id,bin_id,quantity,paid_quantity,
-     unit_price,inventory_value,source_detail_id)
+     unit_price,inventory_value)
 SELECT m.id,d.id,d.item_id,d.bin_id,d.quantity_ordered,d.quantity_ordered,
-    d.unit_price,d.quantity_ordered*d.unit_price,d.id
+    d.unit_price,d.quantity_ordered*d.unit_price
 FROM dbo.goods_receipt_details d JOIN dbo.stock_movements m ON m.goods_receipt_id=d.goods_receipt_id;
 
 INSERT dbo.stock_movement_details
     (stock_movement_id,goods_issue_detail_id,item_id,bin_id,quantity,paid_quantity,
-     unit_price,inventory_value,cost_price,source_detail_id)
+     unit_price,inventory_value,cost_price)
 SELECT m.id,d.id,d.item_id,d.bin_id,d.quantity_ordered,d.quantity_ordered,
     d.unit_price,d.quantity_ordered*d.unit_price,
     (SELECT SUM(r.inventory_value)/NULLIF(SUM(r.quantity_ordered),0) FROM dbo.receipt_transaction_details r JOIN dbo.receipt_transactions h ON h.id=r.goods_receipt_id
-     WHERE r.item_id=d.item_id AND h.warehouse_id=root.warehouse_id AND h.receipt_status='Confirmed' AND h.order_date<=m.operation_date),d.id
+     WHERE r.item_id=d.item_id AND h.warehouse_id=root.warehouse_id AND h.receipt_status='Confirmed' AND h.order_date<=m.operation_date)
 FROM dbo.goods_issue_details d JOIN dbo.stock_movements m ON m.goods_issue_id=d.goods_issue_id JOIN dbo.goods_issues root ON root.id=d.goods_issue_id;
 
 INSERT dbo.payments
-    (code,partner_id,user_id,direction,purpose,amount,payment_date,method,request_key,
+    (code,user_id,purpose,amount,payment_date,method,request_key,
      request_hash,goods_receipt_id,sequence_no,operation_status,confirmed_by,confirmed_at)
-SELECT 'DEMO-PO-P01',h.partner_id,h.user_id,'OUT','PAYMENT',SUM(d.quantity_ordered*d.unit_price),
+SELECT 'DEMO-PO-P01',h.user_id,'PAYMENT',SUM(d.quantity_ordered*d.unit_price),
     h.order_date,N'Chuyển khoản',NEWID(),'demo-seed',h.id,1,'Confirmed',h.user_id,h.activated_at
 FROM dbo.goods_receipts h JOIN dbo.goods_receipt_details d ON d.goods_receipt_id=h.id
 GROUP BY h.id,h.partner_id,h.user_id,h.order_date,h.activated_at;
 
 INSERT dbo.payments
-    (code,partner_id,user_id,direction,purpose,amount,payment_date,method,request_key,
+    (code,user_id,purpose,amount,payment_date,method,request_key,
      request_hash,goods_issue_id,sequence_no,operation_status,confirmed_by,confirmed_at)
-SELECT 'DEMO-SO-P01',h.partner_id,h.user_id,'IN','PAYMENT',SUM(d.quantity_ordered*d.unit_price),
+SELECT 'DEMO-SO-P01',h.user_id,'PAYMENT',SUM(d.quantity_ordered*d.unit_price),
     h.order_date,N'Chuyển khoản',NEWID(),'demo-seed',h.id,1,'Confirmed',h.user_id,h.activated_at
 FROM dbo.goods_issues h JOIN dbo.goods_issue_details d ON d.goods_issue_id=h.id
 GROUP BY h.id,h.partner_id,h.user_id,h.order_date,h.activated_at;

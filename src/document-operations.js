@@ -7,7 +7,7 @@ const {lockLedger,reservedQuantity,rebalanceReservations}=require('./document-re
 const {syncOperationalHistoryAfterDocument}=require('./demand-history');
 const {money}=require('./stock-valuation');
 const {runSerializable}=require('./transaction');
-const {paymentBalances}=require('./payment-accounting');
+const {paymentBalances,withPaymentContext}=require('./payment-accounting');
 const config=kind=>{if(!['receipt','issue'].includes(kind))throw httpError(400,'Loại đơn không hợp lệ');const r=kind==='receipt';return{r,table:r?'goods_receipts':'goods_issues',details:r?'goods_receipt_details':'goods_issue_details',fk:r?'goods_receipt_id':'goods_issue_id',df:r?'goods_receipt_detail_id':'goods_issue_detail_id',op:r?'RECEIPT':'ISSUE'};};
 function amount(v,label='Số lượng',positive=false){const n=Number(v);if(!Number.isFinite(n)||n<0||(positive&&n===0)||n>1e12||Math.abs(n*100-Math.round(n*100))>1e-4)throw httpError(400,`${label} không hợp lệ (tối đa 2 số thập phân)`);return n;}
 const hash=v=>crypto.createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -28,6 +28,7 @@ async function document(tx,kind,id){
   h.movements=(await tx.request().input('id',sql.Int,h.id).query(`SELECT m.*,u.name user_name,v.name confirmed_name,(SELECT COUNT(DISTINCT item_id) FROM stock_movement_details WHERE stock_movement_id=m.id AND quantity>0) item_count,ISNULL((SELECT SUM(quantity) FROM stock_movement_details WHERE stock_movement_id=m.id),0) quantity,
     ISNULL((SELECT SUM(inventory_value) FROM stock_movement_details WHERE stock_movement_id=m.id),0) amount FROM stock_movements m JOIN users u ON u.id=m.user_id LEFT JOIN users v ON v.id=m.confirmed_by WHERE m.${c.fk}=@id ORDER BY m.id`)).recordset;
   h.payments=(await tx.request().input('id',sql.Int,h.id).query(`SELECT p.*,original.purpose refund_of_purpose,original.security_action refund_of_security_action,original.code refund_of_code,u.name user_name,v.name confirmed_name FROM payments p LEFT JOIN payments original ON original.id=p.refund_of_id JOIN users u ON u.id=p.user_id LEFT JOIN users v ON v.id=p.confirmed_by WHERE p.${c.fk}=@id ORDER BY p.id`)).recordset;
+  h.payments=h.payments.map(payment=>withPaymentContext(payment,h.partner_id));
   const confirmed=h.payments.filter(p=>p.operation_status==='Confirmed');
   h.planned_amount=money(h.items.reduce((s,d)=>s+Number(d.quantity_ordered)*Number(d.unit_price),0));
   h.fulfilled_amount=money(h.movements.filter(m=>m.operation_kind===c.op&&m.operation_status==='Confirmed').reduce((s,m)=>s+Number(m.amount),0));

@@ -14,19 +14,26 @@ async function checkSchema(executor) {
       COL_LENGTH('dbo.goods_receipts','revision_no') revision_no,
       COL_LENGTH('dbo.goods_issues','lifecycle_status') lifecycle_status,
       COL_LENGTH('dbo.stock_movement_details','cost_price') posted_cost,
-      COL_LENGTH('dbo.stock_movements','source_document_id') ledger_order,
-      COL_LENGTH('dbo.stock_movement_details','source_detail_id') ledger_line,
-      COL_LENGTH('dbo.payments','security_action') security_action;
+      COL_LENGTH('dbo.stock_movement_details','goods_receipt_detail_id') receipt_line,
+      COL_LENGTH('dbo.stock_movement_details','goods_issue_detail_id') issue_line,
+      COL_LENGTH('dbo.payments','security_action') security_action,
+      COL_LENGTH('dbo.payments','sequence_no') payment_sequence,
+      COL_LENGTH('dbo.payments','request_hash') payment_request_hash;
     SELECT COUNT(*) retired_columns FROM sys.columns WHERE
       (object_id IN (OBJECT_ID('dbo.goods_receipts'),OBJECT_ID('dbo.goods_issues')) AND name IN ('receipt_status','issue_status','confirmed_at','rejected_at')) OR
       (object_id=OBJECT_ID('dbo.goods_receipt_details') AND name IN ('weighted_average_code','paid_quantity','bonus_quantity','commercial_unit_price','inventory_value','cancelled_quantity')) OR
       (object_id=OBJECT_ID('dbo.goods_issue_details') AND name IN ('weighted_average_code','cost_price','auto_calculate_cost','cancelled_quantity')) OR
-      (object_id=OBJECT_ID('dbo.stock_movement_details') AND name IN ('costing_code','auto_calculate_cost')) OR
+      (object_id=OBJECT_ID('dbo.stock_movements') AND name='source_document_id') OR
+      (object_id=OBJECT_ID('dbo.stock_movement_details') AND name IN ('costing_code','auto_calculate_cost','source_detail_id')) OR
+      (object_id=OBJECT_ID('dbo.payments') AND name IN ('partner_id','direction')) OR
       (object_id=OBJECT_ID('dbo.daily_demand_history') AND name IN ('source_product_code','source_store_code'));
     SELECT OBJECT_ID('dbo.report_history') retired_report_table;
+    SELECT COUNT(*) nullable_payment_fields FROM sys.columns
+      WHERE object_id=OBJECT_ID('dbo.payments') AND name IN ('sequence_no','request_hash') AND is_nullable=1;
   `);
   if (result.recordsets[0].length || Object.values(result.recordsets[1][0]).some(v => v === null)
-    || result.recordsets[2][0].retired_columns || result.recordsets[3][0].retired_report_table !== null) {
+    || result.recordsets[2][0].retired_columns || result.recordsets[3][0].retired_report_table !== null
+    || result.recordsets[4][0].nullable_payment_fields) {
     throw new Error('Database chưa đúng schema hiện tại. Tạo môi trường mới bằng database/schema.sql hoặc khôi phục backup tương thích. Không tự nâng cấp dữ liệu.');
   }
   return { success: true };
