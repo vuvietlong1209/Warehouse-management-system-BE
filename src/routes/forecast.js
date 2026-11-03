@@ -3,8 +3,9 @@ const router = express.Router();
 const { getPool, sql } = require('../db');
 const { requirePositiveId } = require('../validation');
 const { getWeeklyDemandSeries } = require('../weekly-demand');
-const { evaluateHistoricalBenchmark, selectOperationalModels, PROTOCOL_VERSION, HISTORICAL_BENCHMARK } = require('../forecasting/evaluation');
-const { buildReplenishmentAnalysis } = require('../forecasting/replenishment');
+const { evaluateHistoricalBenchmark, PROTOCOL_VERSION, HISTORICAL_BENCHMARK } = require('../forecasting/evaluation');
+const { evaluateOperationalModels, CALIBRATION_SOURCE, DEFAULT_CALIBRATION_SIZE, ROLLING_PROTOCOL } = require('../forecasting/rolling');
+const { buildReplenishmentAnalysis, SAFETY_STOCK_METHOD, LEAD_TIME_DAYS, SERVICE_LEVELS } = require('../forecasting/replenishment');
 const { prepareForecastCoverage, isCompleteDemandWeek } = require('../forecasting/coverage');
 const { forecastFollowingWeek } = require('../forecasting/horizon');
 const { demandSeriesCtes, getDemandSeries } = require('../demand-series');
@@ -180,7 +181,7 @@ router.get('/', async (req, res) => {
     const serviceLevel = req.query.service_level === undefined
       ? 0.95
       : Number(req.query.service_level);
-    if (![0.90, 0.95].includes(serviceLevel)) {
+    if (!SERVICE_LEVELS.includes(serviceLevel)) {
       return res.status(400).json({ success: false, message: 'Mức phục vụ chỉ hỗ trợ 0.90 hoặc 0.95' });
     }
 
@@ -231,7 +232,7 @@ router.get('/', async (req, res) => {
         },
         period, view, available_weeks: availableWeeks,
         close_through_date: addDays(liveWeekStart, -1),
-        assumptions: { lead_time_days: 7, service_level: serviceLevel },
+        assumptions: { lead_time_days: LEAD_TIME_DAYS, service_level: serviceLevel, safety_stock_method: SAFETY_STOCK_METHOD },
       });
     }
 
@@ -241,10 +242,12 @@ router.get('/', async (req, res) => {
       currentWeekStart,
       today,
     );
-    const coverage = prepareForecastCoverage(weeklyRows, lastCompletedWeekStart, registeredSeries);
+    const horizonWeeks = historical ? 1 : 2;
+    const coverage = prepareForecastCoverage(weeklyRows, lastCompletedWeekStart, registeredSeries,
+      { calibrationHorizonWeeks: horizonWeeks });
     // Live selection may learn from completed history; it never rewrites a past benchmark.
-    const evaluation = coverage.ready_rows.length ? selectOperationalModels(coverage.ready_rows, {
-      completedThroughDate,
+    const evaluation = coverage.ready_rows.length ? evaluateOperationalModels(coverage.ready_rows, {
+      completedThroughDate, horizonWeeks,
     }) : null;
     const policyBySeries = Object.fromEntries((evaluation?.series || []).map(series => {
       if (historical) return [series.key, {}]; // Defaults: selected week's closing stock, issues and one-step forecast.
@@ -260,7 +263,7 @@ router.get('/', async (req, res) => {
       }];
     }));
     const recommendations = evaluation ? buildReplenishmentAnalysis(evaluation, {
-      leadTimeDays: 7,
+      leadTimeDays: LEAD_TIME_DAYS,
       serviceLevel,
       policyBySeries,
     }).recommendations : [];
@@ -306,28 +309,41 @@ router.get('/', async (req, res) => {
       close_through_date: addDays(liveWeekStart, -1),
       period, view, available_weeks: availableWeeks,
       assumptions: {
-        lead_time_days: 7,
+        lead_time_days: LEAD_TIME_DAYS,
         service_level: serviceLevel,
+        safety_stock_method: SAFETY_STOCK_METHOD,
         on_order_default: 0,
         backorders_default: 0,
       },
       quality: {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: ROLLING_PROTOCOL,
+        selection_protocol: PROTOCOL_VERSION,
         series_count: coverage.series.length,
         selection_source: 'validation_walk_forward',
-        metric_scope: 'live_validation',
+        metric_scope: 'rolling_origin_test',
         forecast_horizon: historical ? 'next_week_after_completed_selected_week' : 'current_week_estimate_then_next_week',
-        evaluation_horizon_weeks: 1,
+        evaluation_horizon_weeks: horizonWeeks,
         deployment_counts: evaluation?.deployment_counts ?? {},
         validation_mae: evaluation?.selected_validation_metrics.mae ?? null,
         validation_metrics: evaluation?.selected_validation_metrics ?? null,
         live_selection: evaluation?.metadata ?? null,
-        // Compatibility fields never substitute live Validation for independent Test.
-        test_mae: null, selected_model_mae: null, test_metrics: null,
+        // Test scores describe causal replay of the adaptive policy, not the latest model alone.
+        test_mae: evaluation?.rolling_test_metrics?.mae ?? null,
+        selected_model_mae: evaluation?.rolling_test_metrics?.mae ?? null,
+        test_metrics: evaluation?.rolling_test_metrics ?? null,
+        rolling_candidate_metrics: evaluation?.rolling_candidate_metrics ?? null,
+        rolling_evaluation: evaluation?.metadata.rolling ?? null,
         benchmark: { available: false, computed: false, endpoint: '/api/forecast/benchmark',
           reason: 'Đánh giá hồi cứu được tách khỏi dự báo vận hành' },
-        calibration_source: 'validation_walk_forward',
-        calibration_samples_per_series: evaluation?.series[0].evaluation.validation_size ?? null,
+        calibration_source: CALIBRATION_SOURCE,
+        safety_stock_method: SAFETY_STOCK_METHOD,
+        error_definition: 'actual_minus_prediction',
+        calibration_samples_per_series: evaluation
+          ? Math.min(...evaluation.series.map(series => series.evaluation.calibration_predictions.length)) : null,
+        calibration_window_weeks: DEFAULT_CALIBRATION_SIZE,
+        calibration_metrics: evaluation?.rolling_calibration_metrics ?? null,
+        calibration_origin: 'completed_week_boundary',
+        live_partial_week_adjustment: !historical,
       },
       filters: { warehouse_id: warehouseId, week_start: currentWeekStart, search: String(req.query.search || '') },
     });

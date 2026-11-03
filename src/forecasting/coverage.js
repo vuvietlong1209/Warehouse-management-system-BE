@@ -25,7 +25,10 @@ function isCompleteDemandWeek(row) {
 // Presence of a confirmed issue is NOT proof that a whole week has been observed.
 // Only the persisted daily-history panel (imported or explicitly closed) can supply
 // complete weeks, including genuine zero-demand weeks.
-function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = []) {
+function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = [], options = {}) {
+  const horizon = options.calibrationHorizonWeeks ?? 0;
+  if (![0, 1, 2].includes(horizon)) throw new Error('Chân trời hiệu chỉnh không hợp lệ');
+  const minimumHistory = MIN_HISTORY_WEEKS + (horizon ? horizon + 1 : 0);
   const expectedStart = new Date(expectedWeekStart);
   if (dateKey(expectedStart) !== expectedWeekStart || expectedStart.getUTCDay() !== 1) {
     throw new Error('Mốc tuần hoàn tất phải là thứ Hai hợp lệ');
@@ -57,7 +60,7 @@ function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = [])
       history.unshift(complete[index][1]);
     }
     const missing = last ? Math.round((expectedStart - new Date(last[0])) / WEEK_MS) : null;
-    const ready = missing === 0 && history.length >= MIN_HISTORY_WEEKS;
+    const ready = missing === 0 && history.length >= minimumHistory;
     const { weeks, ...identity } = group;
     return { ...identity, rows: history, coverage: {
       key: group.key,
@@ -67,7 +70,7 @@ function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = [])
       required_through_date: expectedEnd,
       missing_completed_weeks: missing,
       history_week_count: history.length,
-      minimum_history_weeks: MIN_HISTORY_WEEKS,
+      minimum_history_weeks: minimumHistory,
     } };
   });
   const ready = series.filter(group => group.coverage.forecast_status === 'ready');
@@ -80,7 +83,7 @@ function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = [])
     unavailable_series_count: series.length - ready.length,
     required_through_date: expectedEnd,
     complete_through_date: series.length && ends.length === series.length ? ends[0] : null,
-    minimum_history_weeks: MIN_HISTORY_WEEKS,
+    minimum_history_weeks: minimumHistory,
     series: series.map(group => group.coverage),
   } };
 }

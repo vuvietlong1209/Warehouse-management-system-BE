@@ -76,17 +76,24 @@ function forecastByMethod(values, method, windowSize) {
   throw new Error('Phương pháp dự báo không hợp lệ');
 }
 
-function predictRange(history, start, end, method, windowSize) {
+function prefixForecast(values, method, windowSize, cache) {
+  const key = `${values.length}:${method}:${method === 'wma' ? windowSize : ''}`;
+  if (!cache) return forecastByMethod(values, method, windowSize);
+  if (!cache.has(key)) cache.set(key, forecastByMethod(values, method, windowSize));
+  return cache.get(key);
+}
+
+function predictRange(history, start, end, method, windowSize, cache) {
   const observations = [];
   for (let targetIndex = start; targetIndex < end; targetIndex += 1) {
     // The current target is never an input, including when re-fitting/standardizing LR.
-    const prediction = forecastByMethod(history.slice(0, targetIndex), method, windowSize);
+    const prediction = prefixForecast(history.slice(0, targetIndex), method, windowSize, cache);
     observations.push({ target_index: targetIndex, actual: history[targetIndex], prediction });
   }
   return observations;
 }
 
-function selectWmaWindow(trainingValues, options = {}) {
+function selectWmaWindow(trainingValues, options = {}, cache) {
   const history = historyValues(trainingValues, 10);
   const validationSize = validationSizeOf(options);
   const start = history.length - validationSize;
@@ -99,31 +106,31 @@ function selectWmaWindow(trainingValues, options = {}) {
     if (!Number.isInteger(windowSize) || windowSize <= 0 || windowSize > start) {
       throw new Error('Cửa sổ WMA không phù hợp với tập Train');
     }
-    const predictions = predictRange(history, start, history.length, 'wma', windowSize);
+    const predictions = predictRange(history, start, history.length, 'wma', windowSize, cache);
     return { window_size: windowSize, metrics: calculateMetrics(predictions), predictions };
   });
   results.sort((a, b) => a.metrics.mae - b.metrics.mae || a.window_size - b.window_size);
   return { selected_window: results[0].window_size, validation_size: validationSize, candidates: results };
 }
 
-// This function has no Test parameter. The entire selection/calibration is reproducible from development alone.
-function selectForecastModel(developmentValues, options = {}) {
+// This function has no Test parameter. Selection is reproducible from development alone.
+function selectForecastModel(developmentValues, options = {}, cache) {
   const validationSize = validationSizeOf(options);
   const history = historyValues(developmentValues, validationSize + 10);
   const start = history.length - validationSize;
   const wmaValidation = selectWmaWindow(history, {
     candidates: options.wmaWindows ?? DEFAULT_WMA_WINDOWS, validationSize,
-  });
+  }, cache);
   const window = wmaValidation.selected_window;
   const predictions = {
-    naive: predictRange(history, start, history.length, 'naive'),
+    naive: predictRange(history, start, history.length, 'naive', undefined, cache),
     wma: wmaValidation.candidates.find(candidate => candidate.window_size === window).predictions,
-    linear_regression: predictRange(history, start, history.length, 'linear_regression'),
+    linear_regression: predictRange(history, start, history.length, 'linear_regression', undefined, cache),
   };
   const metrics = Object.fromEntries(METHODS.map(method => [method, calculateMetrics(predictions[method])]));
   const experimentalWinner = metrics.wma.mae <= metrics.linear_regression.mae ? 'wma' : 'linear_regression';
   const method = metrics[experimentalWinner].mae < metrics.naive.mae ? experimentalWinner : 'naive';
-  const nextForecasts = Object.fromEntries(METHODS.map(name => [name, forecastByMethod(history, name, window)]));
+  const nextForecasts = Object.fromEntries(METHODS.map(name => [name, prefixForecast(history, name, window, cache)]));
   return {
     protocol_version: PROTOCOL_VERSION, selection_source: 'validation_walk_forward',
     development_size: history.length, train_size: start, validation_size: validationSize,
@@ -133,7 +140,6 @@ function selectForecastModel(developmentValues, options = {}) {
     selected_wma_window: window, wma_validation: wmaValidation,
     validation_metrics: metrics, validation_predictions: predictions,
     selected_validation_predictions: predictions[method],
-    calibration_predictions: predictions[method], calibration_source: 'validation_walk_forward',
     next_forecasts: nextForecasts, selected_next_forecast: nextForecasts[method],
   };
 }
@@ -326,7 +332,7 @@ function evaluateHistoricalBenchmark(rows) {
   result.metadata.data_hash = crypto.createHash('sha256').update(JSON.stringify(
     result.series.map(series => ({ key: series.key, rows: series.rows.map(row => [weekKey(row.week_start), Number(row.units_sold)]) })),
   )).digest('hex');
-  // Evaluate the already locked selections; this cannot influence model selection/calibration.
+  // Evaluate the already locked selections; this cannot influence model selection.
   result.error_diagnostics = buildErrorDiagnostics(result);
   return result;
 }
@@ -354,7 +360,7 @@ function selectOperationalModels(rows, options = {}) {
     const result = { ...group, values, evaluation: { ...evaluation,
       metadata: { scope: 'live_deployment', selection_source: evaluation.selection_source,
         last_completed_week_start: lastWeek, validation_size: evaluation.validation_size,
-        calibration_source: evaluation.calibration_source, horizon_weeks: 1,
+        horizon_weeks: 1,
         train: { start_index: 0, end_index: evaluation.train_size - 1, count: evaluation.train_size },
         validation: { start_index: evaluation.train_size, end_index: values.length - 1, count: evaluation.validation_size },
       } } };
