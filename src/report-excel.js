@@ -133,7 +133,7 @@ async function renderExcel(snapshot, { signatures, period, display }) {
   // A single tall row keeps all signing areas together when printed across pages.
   sheet.getRow(nextRow).height = 100;
   sheet.views = [{ state: 'frozen', ySplit: headerRow, showGridLines: false }];
-  sheet.pageSetup.printTitlesRow = `1:${headerRow}`;
+  sheet.pageSetup.printTitlesRow = `${headerRow}:${headerRow}`;
   sheet.pageSetup.printArea = `A1:${sheet.getColumn(count).letter}${nextRow}`;
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }

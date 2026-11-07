@@ -3,7 +3,7 @@ const path = require('node:path');
 const { requireDate, httpError } = require('./validation');
 
 const templates = {
-  NXT: ['BÁO CÁO TỔNG HỢP NHẬP XUẤT TỒN KHO', 'BC-KHO-01', 13],
+  NXT: ['BÁO CÁO TỔNG HỢP NHẬP XUẤT TỒN KHO', 'BC-KHO-01', 14],
   PO: ['BẢNG KÊ PHIẾU NHẬP KHO', 'BC-KHO-03', 8],
   SO: ['BẢNG KÊ PHIẾU XUẤT KHO', 'BC-KHO-04', 8],
   KK: ['BẢNG KÊ PHIẾU KIỂM KÊ', 'BC-KHO-05', 7],
@@ -29,26 +29,33 @@ function validateSnapshot(input) {
   if (fromDate > toDate) throw httpError(400, 'Từ ngày không được lớn hơn đến ngày');
   if (!['A4', 'A5'].includes(input.paperSize)) throw httpError(400, 'Khổ giấy không hợp lệ');
   if (!Array.isArray(input.columns) || input.columns.length !== columnCount) throw httpError(400, 'Cấu trúc bảng báo cáo không hợp lệ');
-  const text = (value, max) => {
-    if (typeof value !== 'string' || value.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)) throw httpError(400, 'Nội dung báo cáo không hợp lệ hoặc quá dài');
+  const text = (value, max, field) => {
+    if (typeof value !== 'string') throw httpError(400, `${field}: thiếu dữ liệu hoặc không đúng kiểu văn bản`);
+    if (value.length > max) throw httpError(400, `${field}: không được vượt quá ${max} ký tự`);
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)) throw httpError(400, `${field}: chứa ký tự điều khiển không hợp lệ`);
     return value;
   };
-  const columns = input.columns.map(column => {
+  const columns = input.columns.map((column, index) => {
     if (!column || !['left', 'center', 'right'].includes(column.align) || !Number.isFinite(column.width) || column.width < 1 || column.width > 100) throw httpError(400, 'Độ rộng cột báo cáo không hợp lệ');
-    return { label: text(column.label, 96), width: column.width, align: column.align };
+    return { label: text(column.label, 96, `Tiêu đề cột ${index + 1}`), width: column.width, align: column.align };
   });
-  const readRows = (rows, maximum) => {
+  const readRows = (rows, maximum, section) => {
     if (!Array.isArray(rows) || rows.length > maximum) throw httpError(400, `Báo cáo không được vượt quá ${maximum} dòng`);
-    return rows.map(row => {
-      if (!Array.isArray(row) || row.length !== columnCount) throw httpError(400, 'Số cột của dòng báo cáo không hợp lệ');
-      return row.map(value => typeof value === 'number' && Number.isFinite(value) ? value : text(value, 512));
+    return rows.map((row, rowIndex) => {
+      if (!Array.isArray(row) || row.length !== columnCount) throw httpError(400, `${section} ${rowIndex + 1}: số cột không hợp lệ (cần ${columnCount} cột)`);
+      return row.map((value, columnIndex) => {
+        const field = `${section} ${rowIndex + 1}, cột ${columnIndex + 1} (${columns[columnIndex].label})`;
+        if (typeof value !== 'number') return text(value, 512, field);
+        if (!Number.isFinite(value)) throw httpError(400, `${field}: giá trị phải là số hữu hạn`);
+        return value;
+      });
     });
   };
   const createdAt = new Date(input.createdAt);
   if (Number.isNaN(createdAt.getTime())) throw httpError(400, 'Ngày tạo báo cáo không hợp lệ');
   return { reportType: input.reportType, title, formCode, fromDate, toDate, paperSize: input.paperSize,
-    warehouseName: text(input.warehouseName, 256), search: text(input.search || '', 128),
-    createdAt: createdAt.toISOString(), columns, rows: readRows(input.rows, 10000), totals: readRows(input.totals, 10) };
+    warehouseName: text(input.warehouseName, 256, 'Tên kho'), search: text(input.search ?? '', 128, 'Từ khóa tìm kiếm'),
+    createdAt: createdAt.toISOString(), columns, rows: readRows(input.rows, 10000, 'Dòng dữ liệu'), totals: readRows(input.totals, 10, 'Dòng tổng') };
 }
 
 function rowCells(snapshot, row, total = false) {
@@ -61,7 +68,7 @@ function rowCells(snapshot, row, total = false) {
 
 async function renderWord(snapshot) {
   const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType,
-    TableLayoutType, AlignmentType, VerticalAlign, BorderStyle, HeadingLevel, Tab, TabStopType } = require('docx');
+    TableLayoutType, AlignmentType, VerticalAlign, BorderStyle, HeadingLevel, Tab, TabStopType, Footer, PageNumber } = require('docx');
   const landscape = ['NXT', 'COGS'].includes(snapshot.reportType);
   const page = snapshot.paperSize === 'A5' ? [8391, 11906] : [11906, 16838];
   const margin = snapshot.paperSize === 'A5' ? 397 : 567;
@@ -105,7 +112,10 @@ async function renderWord(snapshot) {
     styles: { default: { document: { run: { font: 'Times New Roman', size: 20, color: '000000' } } },
       paragraphStyles: [{ id: 'Title', name: 'Title', basedOn: 'Normal', run: { font: 'Times New Roman', size: 28, bold: true, color: '000000' } }] },
     sections: [{ properties: { page: { size: { width: page[0], height: page[1], orientation: landscape ? 'landscape' : 'portrait' },
-      margin: { top: margin, bottom: margin, left: margin, right: margin } } }, children: [
+      margin: { top: margin, bottom: margin, left: margin, right: margin, footer: Math.floor(margin / 2) } } },
+    footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, spacing: { after: 0 },
+      children: [new TextRun({ text: 'Trang ', font: 'Times New Roman', size: snapshot.paperSize === 'A5' ? 16 : 18 }),
+        new TextRun({ children: [PageNumber.CURRENT], font: 'Times New Roman', size: snapshot.paperSize === 'A5' ? 16 : 18 })] })] }) }, children: [
       // A right-aligned tab is anchored to the printable page width, not to spaces
       // after the unit name. Keep this in the document body (first page only).
       new Paragraph({ tabStops: [{ type: TabStopType.RIGHT, position: tableWidth }], keepNext: true,
