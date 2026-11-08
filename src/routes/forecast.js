@@ -4,8 +4,9 @@ const { getPool, sql } = require('../db');
 const { requirePositiveId } = require('../validation');
 const { getWeeklyDemandSeries } = require('../weekly-demand');
 const { evaluateHistoricalBenchmark, PROTOCOL_VERSION, HISTORICAL_BENCHMARK } = require('../forecasting/evaluation');
-const { evaluateOperationalModels, CALIBRATION_SOURCE, DEFAULT_CALIBRATION_SIZE, ROLLING_PROTOCOL } = require('../forecasting/rolling');
-const { buildReplenishmentAnalysis, SAFETY_STOCK_METHOD, LEAD_TIME_DAYS, SERVICE_LEVELS } = require('../forecasting/replenishment');
+const { evaluateOperationalModels, ROLLING_PROTOCOL } = require('../forecasting/rolling');
+const { buildReplenishmentAnalysis, SAFETY_STOCK_METHOD, SAFETY_STOCK_SOURCE,
+  SAFETY_STOCK_WINDOW_WEEKS, LEAD_TIME_DAYS } = require('../forecasting/replenishment');
 const { prepareForecastCoverage, isCompleteDemandWeek } = require('../forecasting/coverage');
 const { forecastFollowingWeek } = require('../forecasting/horizon');
 const { demandSeriesCtes, getDemandSeries } = require('../demand-series');
@@ -178,13 +179,6 @@ router.get('/', async (req, res) => {
     const warehouseId = req.query.warehouse_id
       ? requirePositiveId(req.query.warehouse_id, 'Kho')
       : null;
-    const serviceLevel = req.query.service_level === undefined
-      ? 0.95
-      : Number(req.query.service_level);
-    if (!SERVICE_LEVELS.includes(serviceLevel)) {
-      return res.status(400).json({ success: false, message: 'Mức phục vụ chỉ hỗ trợ 0.90 hoặc 0.95' });
-    }
-
     const today = todayKey();
     const liveWeekStart = mondayOfWeek(today);
     const requestedWeek = req.query.week_start;
@@ -232,7 +226,9 @@ router.get('/', async (req, res) => {
         },
         period, view, available_weeks: availableWeeks,
         close_through_date: addDays(liveWeekStart, -1),
-        assumptions: { lead_time_days: LEAD_TIME_DAYS, service_level: serviceLevel, safety_stock_method: SAFETY_STOCK_METHOD },
+        assumptions: { lead_time_days: LEAD_TIME_DAYS, safety_stock_method: SAFETY_STOCK_METHOD,
+          safety_stock_source: SAFETY_STOCK_SOURCE, safety_stock_window_weeks: SAFETY_STOCK_WINDOW_WEEKS,
+          safety_stock_average_basis: 'positive_demand_weeks' },
       });
     }
 
@@ -243,8 +239,7 @@ router.get('/', async (req, res) => {
       today,
     );
     const horizonWeeks = historical ? 1 : 2;
-    const coverage = prepareForecastCoverage(weeklyRows, lastCompletedWeekStart, registeredSeries,
-      { calibrationHorizonWeeks: horizonWeeks });
+    const coverage = prepareForecastCoverage(weeklyRows, lastCompletedWeekStart, registeredSeries);
     // Live selection may learn from completed history; it never rewrites a past benchmark.
     const evaluation = coverage.ready_rows.length ? evaluateOperationalModels(coverage.ready_rows, {
       completedThroughDate, horizonWeeks,
@@ -264,7 +259,6 @@ router.get('/', async (req, res) => {
     }));
     const recommendations = evaluation ? buildReplenishmentAnalysis(evaluation, {
       leadTimeDays: LEAD_TIME_DAYS,
-      serviceLevel,
       policyBySeries,
     }).recommendations : [];
     for (const group of coverage.series) {
@@ -310,8 +304,10 @@ router.get('/', async (req, res) => {
       period, view, available_weeks: availableWeeks,
       assumptions: {
         lead_time_days: LEAD_TIME_DAYS,
-        service_level: serviceLevel,
         safety_stock_method: SAFETY_STOCK_METHOD,
+        safety_stock_source: SAFETY_STOCK_SOURCE,
+        safety_stock_window_weeks: SAFETY_STOCK_WINDOW_WEEKS,
+        safety_stock_average_basis: 'positive_demand_weeks',
         on_order_default: 0,
         backorders_default: 0,
       },
@@ -335,14 +331,10 @@ router.get('/', async (req, res) => {
         rolling_evaluation: evaluation?.metadata.rolling ?? null,
         benchmark: { available: false, computed: false, endpoint: '/api/forecast/benchmark',
           reason: 'Đánh giá hồi cứu được tách khỏi dự báo vận hành' },
-        calibration_source: CALIBRATION_SOURCE,
         safety_stock_method: SAFETY_STOCK_METHOD,
-        error_definition: 'actual_minus_prediction',
-        calibration_samples_per_series: evaluation
-          ? Math.min(...evaluation.series.map(series => series.evaluation.calibration_predictions.length)) : null,
-        calibration_window_weeks: DEFAULT_CALIBRATION_SIZE,
-        calibration_metrics: evaluation?.rolling_calibration_metrics ?? null,
-        calibration_origin: 'completed_week_boundary',
+        safety_stock_source: SAFETY_STOCK_SOURCE,
+        safety_stock_window_weeks: SAFETY_STOCK_WINDOW_WEEKS,
+        safety_stock_average_basis: 'positive_demand_weeks',
         live_partial_week_adjustment: !historical,
       },
       filters: { warehouse_id: warehouseId, week_start: currentWeekStart, search: String(req.query.search || '') },

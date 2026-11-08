@@ -25,10 +25,10 @@ function isCompleteDemandWeek(row) {
 // Presence of a confirmed issue is NOT proof that a whole week has been observed.
 // Only the persisted daily-history panel (imported or explicitly closed) can supply
 // complete weeks, including genuine zero-demand weeks.
-function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = [], options = {}) {
-  const horizon = options.calibrationHorizonWeeks ?? 0;
-  if (![0, 1, 2].includes(horizon)) throw new Error('Chân trời hiệu chỉnh không hợp lệ');
-  const minimumHistory = MIN_HISTORY_WEEKS + (horizon ? horizon + 1 : 0);
+function prepareForecastCoverage(rows, expectedWeekStart, registeredSeries = []) {
+  // Train/Validation already requires more than the twelve safety-stock weeks.
+  // Mature Test observations are for evaluation, not a prerequisite for stocking.
+  const minimumHistory = MIN_HISTORY_WEEKS;
   const expectedStart = new Date(expectedWeekStart);
   if (dateKey(expectedStart) !== expectedWeekStart || expectedStart.getUTCDay() !== 1) {
     throw new Error('Mốc tuần hoàn tất phải là thứ Hai hợp lệ');

@@ -21,7 +21,7 @@ async function main() {
     ]);
     const results = {};
     for (const horizonWeeks of [1, 2]) {
-      const coverage = prepareForecastCoverage(rows, start, registered, { calibrationHorizonWeeks: horizonWeeks });
+      const coverage = prepareForecastCoverage(rows, start, registered);
       const result = coverage.ready_rows.length ? evaluateOperationalModels(coverage.ready_rows,
         { completedThroughDate: cutoff, horizonWeeks }) : null;
       const replenishment = result ? buildReplenishmentAnalysis(result, {
@@ -36,7 +36,6 @@ async function main() {
         ready_series: coverage.metadata.ready_series_count, unavailable_series: coverage.metadata.unavailable_series_count,
         test_metrics: result?.rolling_test_metrics ?? null,
         candidates: result?.rolling_candidate_metrics ?? null,
-        recent_calibration_metrics: result?.rolling_calibration_metrics ?? null,
         metadata: result?.metadata.rolling ?? null,
         replenishment: replenishment ? { scope: 'completed_week_boundary_not_live_stock',
           assumptions: replenishment.assumptions, kpis: replenishment.kpis } : null,
@@ -44,9 +43,6 @@ async function main() {
           warehouse_code: series.warehouse_code, current_method: series.evaluation.deployment_method,
           current_validation_mae: series.evaluation.validation_metrics[series.evaluation.deployment_method].mae,
           rolling_test_metrics: series.evaluation.rolling_test_metrics,
-          calibration_source: series.evaluation.calibration_source,
-          calibration_count: series.evaluation.calibration_predictions.length,
-          recent_calibration_metrics: series.evaluation.calibration_metrics,
           replenishment: replenishment.recommendations[index],
           ...(process.argv.includes('--details') ? { observations: series.evaluation.rolling_predictions } : {}),
         })) ?? [],

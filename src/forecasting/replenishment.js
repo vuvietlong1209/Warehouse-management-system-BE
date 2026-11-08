@@ -1,41 +1,42 @@
-const { CALIBRATION_SOURCE } = require('./rolling');
-const SAFETY_STOCK_METHOD = 'signed-error-quantile-r7';
-const SERVICE_LEVELS = Object.freeze([0.90, 0.95]);
+const { isCompleteDemandWeek } = require('./coverage');
+const SAFETY_STOCK_METHOD = 'weekly-max-minus-positive-mean';
+const SAFETY_STOCK_SOURCE = 'completed_weekly_issues';
+const SAFETY_STOCK_WINDOW_WEEKS = 12;
 const LEAD_TIME_DAYS = 7;
 
-// Hyndman-Fan Type 7 (R quantile(type=7), Excel PERCENTILE.INC).
-// Sort ALL signed errors; filtering negatives would estimate a different distribution.
-function quantileR7(values, probability) {
-  if (!Array.isArray(values) || values.length === 0) {
-    throw new Error('Cần ít nhất một sai số để tính phân vị');
-  }
-  const samples = Array.from(values);
-  if (samples.some(value => value == null || typeof value === 'boolean'
-    || (typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '')) {
-    throw new Error('Sai số dự báo phải là số hữu hạn');
-  }
-  const sorted = samples.map(Number).sort((a, b) => a - b);
-  if (sorted.some(value => !Number.isFinite(value))) throw new Error('Sai số dự báo phải là số hữu hạn');
-  if (typeof probability !== 'number' || !Number.isFinite(probability) || probability < 0 || probability > 1) {
-    throw new Error('Xác suất phân vị phải nằm trong khoảng 0 đến 1');
-  }
-  const index = (sorted.length - 1) * probability;
-  const lower = Math.floor(index), fraction = index - lower;
-  if (fraction === 0) return sorted[lower];
-  return (1 - fraction) * sorted[lower] + fraction * sorted[lower + 1];
-}
-
 function ceilUnits(value) {
-  // Avoid adding a whole unit to e.g. 40.00000000000003 from binary interpolation.
+  // Avoid adding a phantom unit when subtracting a floating-point average.
   const nearest = Math.round(value);
   return Math.abs(value - nearest) <= 128 * Number.EPSILON * Math.max(1, Math.abs(value))
     ? nearest : Math.ceil(value);
 }
 
-function resolveServiceLevel(value) {
-  const serviceLevel = Number(value);
-  if (!SERVICE_LEVELS.includes(serviceLevel)) throw new Error('Mức phục vụ chỉ hỗ trợ 0.90 hoặc 0.95');
-  return serviceLevel;
+function calculateSafetyStock(weeklyDemand) {
+  if (!Array.isArray(weeklyDemand) || weeklyDemand.length !== SAFETY_STOCK_WINDOW_WEEKS) {
+    throw new Error('Tồn an toàn cần đúng 12 tuần lịch sử đã hoàn tất');
+  }
+  const values = Array.from(weeklyDemand, value => {
+    if (value == null || typeof value === 'boolean'
+      || !['number', 'string'].includes(typeof value) || String(value).trim() === ''
+      || !Number.isFinite(Number(value)) || Number(value) < 0) {
+      throw new Error('Lượng xuất mỗi tuần phải là số hữu hạn, không âm; không được coi thiếu dữ liệu là 0');
+    }
+    return Number(value);
+  });
+  const positive = values.filter(value => value > 0);
+  const maximum = Math.max(...values);
+  const average = positive.length ? positive.reduce((sum, value) => sum + value, 0) / positive.length : 0;
+  // Weekly demand × (7 days / 7 days) on both sides: no extra factor of seven.
+  return {
+    safety_stock_method: SAFETY_STOCK_METHOD,
+    safety_stock_source: SAFETY_STOCK_SOURCE,
+    safety_stock_window_weeks: SAFETY_STOCK_WINDOW_WEEKS,
+    maximum_weekly_demand: maximum,
+    average_positive_weekly_demand: average,
+    positive_demand_week_count: positive.length,
+    zero_demand_week_count: values.length - positive.length,
+    safety_stock: ceilUnits(Math.max(0, maximum - average)),
+  };
 }
 
 function calculateReplenishmentRecommendation(input) {
@@ -51,28 +52,16 @@ function calculateReplenishmentRecommendation(input) {
     throw new Error('Dự báo, tồn kho và lead time phải hợp lệ, không âm');
   }
 
-  // Both h1 and h2 predict ONE target week's demand, not cumulative two-week demand.
-  // A different lead time needs errors for that protection period, not sqrt scaling.
-  if (leadTimeDays !== LEAD_TIME_DAYS) throw new Error('Phân vị hiện chỉ hiệu chỉnh cho lead time 7 ngày');
-  const serviceLevel = resolveServiceLevel(input.serviceLevel ?? 0.95);
-  const residuals = input.residuals || [];
-  if (!Array.isArray(residuals) || residuals.length < 2) {
-    throw new Error('Cần ít nhất 2 sai số hiệu chỉnh; không được coi thiếu dữ liệu là sai số 0');
-  }
-  const forecastErrorQuantile = quantileR7(residuals, serviceLevel);
-  const safetyStock = ceilUnits(Math.max(0, forecastErrorQuantile));
-  const reorderPoint = ceilUnits(forecast + safetyStock);
+  if (leadTimeDays !== LEAD_TIME_DAYS) throw new Error('Thời gian giao hàng trung bình và tối đa hiện cố định 7 ngày');
+  const safety = calculateSafetyStock(input.weeklyDemand);
+  const reorderPoint = ceilUnits(forecast + safety.safety_stock);
   const inventoryPosition = onHand + onOrder - backorders;
   const recommendedOrderQuantity = Math.max(0, ceilUnits(reorderPoint - inventoryPosition));
 
   return {
-    service_level: serviceLevel,
-    safety_stock_method: SAFETY_STOCK_METHOD,
-    error_definition: 'actual_minus_prediction',
+    ...safety,
     lead_time_days: leadTimeDays,
-    forecast_error_quantile: forecastErrorQuantile,
     forecast_lead_time_demand: forecast,
-    safety_stock: safetyStock,
     reorder_point: reorderPoint,
     on_hand: onHand,
     on_order: onOrder,
@@ -87,23 +76,22 @@ function buildReplenishmentAnalysis(forecastEvaluation, options = {}) {
   if (!forecastEvaluation || !Array.isArray(forecastEvaluation.series)) {
     throw new Error('Kết quả đánh giá dự báo không hợp lệ');
   }
-  const serviceLevel = options.serviceLevel ?? 0.95;
+  if (forecastEvaluation.metadata?.scope !== 'live_deployment') {
+    throw new Error('Tồn an toàn chỉ dùng lịch sử dự báo vận hành đã hoàn tất, không dùng kết quả benchmark');
+  }
   const defaultLeadTimeDays = options.leadTimeDays ?? LEAD_TIME_DAYS;
   const recommendations = forecastEvaluation.series.map((series) => {
-    const latestRow = series.rows[series.rows.length - 1];
+    const recent = series.rows.slice(-SAFETY_STOCK_WINDOW_WEEKS);
+    if (recent.length !== SAFETY_STOCK_WINDOW_WEEKS || !recent.every(isCompleteDemandWeek)) {
+      throw new Error('Tồn an toàn cần đủ 12 tuần hoàn tất, không thiếu ngày hoặc tự điền tuần 0');
+    }
+    if (recent.some((row, index) => index > 0
+      && new Date(row.week_start) - new Date(recent[index - 1].week_start) !== 7 * 86400000)) {
+      throw new Error('Cửa sổ tồn an toàn phải gồm 12 tuần liên tiếp');
+    }
+    const latestRow = recent.at(-1);
     const evaluation = series.evaluation;
     const method = evaluation.deployment_method;
-    if (evaluation.calibration_source !== CALIBRATION_SOURCE
-      || !Array.isArray(evaluation.calibration_predictions)) {
-      throw new Error('Tồn an toàn phải dùng sai số cuốn chiếu ngoài mẫu, không dùng sai số Validation/benchmark');
-    }
-    if (![1, 2].includes(evaluation.calibration_horizon_weeks)
-      || evaluation.calibration_predictions.some(row => row.horizon_weeks !== evaluation.calibration_horizon_weeks)) {
-      throw new Error('Sai số hiệu chỉnh phải khớp chân trời dự báo một/hai bước');
-    }
-    const residuals = evaluation.calibration_predictions.map(
-      (observation) => observation.actual - observation.prediction,
-    );
     const policy = options.policyBySeries?.[series.key] || {};
     const forecast = policy.forecast ?? evaluation.selected_next_forecast;
     const recommendation = calculateReplenishmentRecommendation({
@@ -112,8 +100,7 @@ function buildReplenishmentAnalysis(forecastEvaluation, options = {}) {
       onOrder: policy.onOrder ?? 0,
       backorders: policy.backorders ?? 0,
       leadTimeDays: policy.leadTimeDays ?? defaultLeadTimeDays,
-      serviceLevel: policy.serviceLevel ?? serviceLevel,
-      residuals,
+      weeklyDemand: recent.map(row => row.units_sold),
     });
     return {
       key: series.key,
@@ -133,11 +120,9 @@ function buildReplenishmentAnalysis(forecastEvaluation, options = {}) {
       selected_wma_window: evaluation.selected_wma_window,
       validation_mae: evaluation.validation_metrics[method].mae,
       rolling_test_mae: evaluation.rolling_test_metrics?.mae ?? null,
-      calibration_horizon_weeks: evaluation.calibration_horizon_weeks,
-      calibration_metrics: evaluation.calibration_metrics ?? null,
       selection_source: evaluation.selection_source,
-      calibration_source: evaluation.calibration_source,
-      calibration_sample_count: residuals.length,
+      safety_stock_window_start: new Date(recent[0].week_start).toISOString().slice(0, 10),
+      safety_stock_window_end: new Date(latestRow.week_end).toISOString().slice(0, 10),
       ...recommendation,
     };
   });
@@ -148,9 +133,10 @@ function buildReplenishmentAnalysis(forecastEvaluation, options = {}) {
   return {
     assumptions: {
       default_lead_time_days: Number(defaultLeadTimeDays),
-      default_service_level: Number(serviceLevel),
       safety_stock_method: SAFETY_STOCK_METHOD,
-      error_definition: 'actual_minus_prediction',
+      safety_stock_source: SAFETY_STOCK_SOURCE,
+      safety_stock_window_weeks: SAFETY_STOCK_WINDOW_WEEKS,
+      safety_stock_average_basis: 'positive_demand_weeks',
       on_order_default: 0,
       backorders_default: 0,
     },
@@ -172,9 +158,10 @@ function buildReplenishmentAnalysis(forecastEvaluation, options = {}) {
 
 module.exports = {
   SAFETY_STOCK_METHOD,
-  SERVICE_LEVELS,
+  SAFETY_STOCK_SOURCE,
+  SAFETY_STOCK_WINDOW_WEEKS,
   LEAD_TIME_DAYS,
   buildReplenishmentAnalysis,
   calculateReplenishmentRecommendation,
-  quantileR7,
+  calculateSafetyStock,
 };
