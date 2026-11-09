@@ -276,6 +276,7 @@ CREATE TABLE dbo.[stock_movement_details] (
     [unit_price] DECIMAL(18,2) NOT NULL,
     [inventory_value] DECIMAL(18,2) NOT NULL,
     [cost_price] DECIMAL(18,2) NOT NULL CONSTRAINT [DF_stock_movement_details_cost_price] DEFAULT ((0)),
+    [cost_value] DECIMAL(18,2) NULL,
     [created_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movement_details_created_at] DEFAULT (getdate()),
     [updated_at] DATETIME2(7) NOT NULL CONSTRAINT [DF_stock_movement_details_updated_at] DEFAULT (getdate()),
     CONSTRAINT [PK_stock_movement_details] PRIMARY KEY CLUSTERED ([id]),
@@ -285,6 +286,7 @@ CREATE TABLE dbo.[stock_movement_details] (
     CONSTRAINT [CK_stock_movement_details_3] CHECK ([paid_quantity]>=(0)),
     CONSTRAINT [CK_stock_movement_details_4] CHECK ([quantity]>(0)),
     CONSTRAINT [CK_stock_movement_details_5] CHECK ([unit_price]>=(0)),
+    CONSTRAINT [CK_stock_movement_details_cost_value] CHECK ([cost_value] IS NULL OR [cost_value]>=(0)),
     CONSTRAINT [CK_stock_movement_details_6] CHECK ([goods_receipt_detail_id] IS NOT NULL AND [goods_issue_detail_id] IS NULL OR [goods_receipt_detail_id] IS NULL AND [goods_issue_detail_id] IS NOT NULL),
     CONSTRAINT [CK_stock_movement_details_7] CHECK ([quantity]=([paid_quantity]+[bonus_quantity])),
     CONSTRAINT [FK_stock_movement_details_bin_id] FOREIGN KEY ([bin_id]) REFERENCES dbo.[bins] ([id]),
@@ -370,7 +372,7 @@ GO
 
 CREATE VIEW dbo.issue_transaction_details AS
  SELECT d.id,d.stock_movement_id goods_issue_id,d.goods_issue_detail_id root_detail_id,d.item_id,d.bin_id,d.quantity quantity_ordered,
- d.unit_price,d.cost_price,d.created_at,d.updated_at,
+ d.unit_price,d.cost_price,d.cost_value,d.created_at,d.updated_at,
  d.id ledger_line_id
  FROM dbo.stock_movement_details d JOIN dbo.stock_movements m ON m.id=d.stock_movement_id WHERE m.operation_kind='ISSUE';
 GO

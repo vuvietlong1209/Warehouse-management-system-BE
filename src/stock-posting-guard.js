@@ -1,6 +1,6 @@
 const { sql } = require('./db');
 const { loadValuationData } = require('./valuation-data');
-const { valueItemStock, valuationEvents, money } = require('./stock-valuation');
+const { valueItemStock, valuationEvents, money, issueCostValue } = require('./stock-valuation');
 
 const EPSILON = 1e-8;
 const eventKey = event => `${event.type}:${event.line_id}`;
@@ -35,6 +35,15 @@ function assertStockPostingSafe(before, after, { itemIds, binIds, bins }) {
       }
       const old = original.get(eventKey(event));
       if (event.type === 'OUT') {
+        if (event.cost_value != null) {
+          const expectedValue = issueCostValue(Number(event.quantity_ordered), state);
+          if (old && expectedValue !== issueCostValue(Number(event.quantity_ordered), old)) {
+            throw conflict(`làm thay đổi giá trị giá vốn đã chốt của phiếu ${documentLabel(event)}, sản phẩm ${item.code}.`);
+          }
+          if (!old && money(Number(event.cost_value)) !== expectedValue) {
+            throw conflict(`giá trị giá vốn của ${documentLabel(event)}, sản phẩm ${item.code} không khớp thứ tự giao dịch.`);
+          }
+        }
         const expected = money(expectedCost(event, state));
         if (old && expected !== money(expectedCost(event, old))) {
           throw conflict(`làm thay đổi giá vốn đã chốt của phiếu ${documentLabel(event)}, sản phẩm ${item.code} `

@@ -45,10 +45,7 @@ function documentRouter(kind){
   const r=express.Router(),c=ops.config(kind);
   r.get('/postings',handle(async()=>{const pool=await getPool(),hs=(await pool.request().query(`SELECT h.*,w.name warehouse_name,p.name partner_name,u.name user_name FROM ${c.r?'receipt_transactions':'issue_transactions'} h JOIN warehouses w ON w.id=h.warehouse_id JOIN partners p ON p.id=h.partner_id JOIN users u ON u.id=h.user_id WHERE h.status=1 ORDER BY h.id DESC`)).recordset;
     const ds=(await pool.request().query(`SELECT d.*,i.code item_code,i.name item_name,b.description bin_description FROM ${c.r?'receipt_transaction_details':'issue_transaction_details'} d JOIN items i ON i.id=d.item_id JOIN bins b ON b.id=d.bin_id ORDER BY d.id`)).recordset;return hs.map(h=>({...h,items:ds.filter(d=>d[c.fk]===h.id)}));}));
-  r.get('/',handle(async req=>{const pool=await getPool(),ids=(await pool.request().query(`SELECT id FROM ${c.table} WHERE status=1 OR lifecycle_status='Cancelled' ORDER BY id DESC`)).recordset;let rows=[];for(const h of ids)rows.push(await ops.document(pool,kind,h.id));
-    const search=String(req.query.search||'').toLocaleLowerCase('vi');if(search)rows=rows.filter(h=>[h.code,h.partner_name,h.warehouse_name].join(' ').toLocaleLowerCase('vi').includes(search));if(req.query.status)rows=rows.filter(h=>h.lifecycle_status===req.query.status);
-    if(req.query.page!==undefined||req.query.search!==undefined){const page=Math.max(1,parseInt(req.query.page)||1),size=Math.min(100,Math.max(5,parseInt(req.query.page_size)||25));return{data:rows.slice((page-1)*size,page*size),pagination:{page,page_size:size,total:rows.length,total_pages:Math.ceil(rows.length/size)}};}return rows;
-  }));
+  r.get('/',handle(async req=>require('../document-list').listDocuments(await getPool(),kind,req.query)));
   r.post('/initial',(req,res,next)=>{res.status(201);next();},handle(req=>ops.write(tx=>require('../document-initial').createInitial(tx,kind,req.body,req.user.id))));
   r.get('/:id',handle(req=>getPool().then(p=>ops.document(p,kind,req.params.id))));
   r.post('/',(req,res,next)=>{res.status(201);next();},handle(req=>ops.write(async tx=>{const id=await ops.saveDocument(tx,kind,req.body,req.user.id);return{success:true,[c.r?'receiptId':'issueId']:id,id};})));

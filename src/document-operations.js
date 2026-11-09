@@ -1,11 +1,11 @@
 const crypto=require('node:crypto');
 const {sql}=require('./db');
 const {httpError,requirePositiveId,requireDate}=require('./validation');
-const {validateItemAndBin,validateDocumentHeader,getItemBinStock,getWeightedAverageCost}=require('./inventory');
+const {validateItemAndBin,validateDocumentHeader,getItemBinStock,getWarehouseValuation}=require('./inventory');
 const {captureStockPosting,validateStockPosting}=require('./stock-posting-guard');
 const {lockLedger,reservedQuantity,rebalanceReservations}=require('./document-reservations');
 const {syncOperationalHistoryAfterDocument}=require('./demand-history');
-const {money}=require('./stock-valuation');
+const {money,issueCostValue}=require('./stock-valuation');
 const {runSerializable}=require('./transaction');
 const {paymentBalances,withPaymentContext}=require('./payment-accounting');
 const config=kind=>{if(!['receipt','issue'].includes(kind))throw httpError(400,'Loại đơn không hợp lệ');const r=kind==='receipt';return{r,table:r?'goods_receipts':'goods_issues',details:r?'goods_receipt_details':'goods_issue_details',fk:r?'goods_receipt_id':'goods_issue_id',df:r?'goods_receipt_detail_id':'goods_issue_detail_id',op:r?'RECEIPT':'ISSUE'};};
@@ -24,7 +24,7 @@ async function document(tx,kind,id){
     ISNULL((SELECT SUM(${c.r?'x.paid_quantity':'x.quantity'}) FROM stock_movement_details x JOIN stock_movements m ON m.id=x.stock_movement_id WHERE x.${c.df}=d.id AND m.operation_kind='${c.op}' AND m.operation_status='Pending'),0) pending_quantity
     FROM ${c.details} d JOIN items i ON i.id=d.item_id JOIN base_units u ON u.id=i.base_unit_id JOIN bins b ON b.id=d.bin_id WHERE d.${c.fk}=@id ORDER BY d.id`)).recordset;
   h.items.forEach(d=>{d.fulfilled_cost_price=0;d.remaining_quantity=money(Number(d.quantity_ordered)-Number(d.fulfilled_quantity));d.recordable_quantity=Math.max(0,money(d.remaining_quantity-Number(d.pending_quantity)));});
-  if(!c.r){const costs=(await tx.request().input('id',sql.Int,h.id).query("SELECT x.goods_issue_detail_id id,SUM(x.quantity*x.cost_price)/NULLIF(SUM(x.quantity),0) cost FROM stock_movement_details x JOIN stock_movements m ON m.id=x.stock_movement_id WHERE m.goods_issue_id=@id AND m.operation_status='Confirmed' AND m.operation_kind='ISSUE' GROUP BY x.goods_issue_detail_id")).recordset;h.items.forEach(d=>{const cost=costs.find(x=>x.id===d.id);d.fulfilled_cost_price=Number(cost?.cost||0);});}
+  if(!c.r){const costs=(await tx.request().input('id',sql.Int,h.id).query("SELECT x.goods_issue_detail_id id,SUM(COALESCE(x.cost_value,ROUND(x.quantity*x.cost_price,2)))/NULLIF(SUM(x.quantity),0) cost FROM stock_movement_details x JOIN stock_movements m ON m.id=x.stock_movement_id WHERE m.goods_issue_id=@id AND m.operation_status='Confirmed' AND m.operation_kind='ISSUE' GROUP BY x.goods_issue_detail_id")).recordset;h.items.forEach(d=>{const cost=costs.find(x=>x.id===d.id);d.fulfilled_cost_price=money(Number(cost?.cost||0));});}
   h.movements=(await tx.request().input('id',sql.Int,h.id).query(`SELECT m.*,u.name user_name,v.name confirmed_name,(SELECT COUNT(DISTINCT item_id) FROM stock_movement_details WHERE stock_movement_id=m.id AND quantity>0) item_count,ISNULL((SELECT SUM(quantity) FROM stock_movement_details WHERE stock_movement_id=m.id),0) quantity,
     ISNULL((SELECT SUM(inventory_value) FROM stock_movement_details WHERE stock_movement_id=m.id),0) amount FROM stock_movements m JOIN users u ON u.id=m.user_id LEFT JOIN users v ON v.id=m.confirmed_by WHERE m.${c.fk}=@id ORDER BY m.id`)).recordset;
   h.payments=(await tx.request().input('id',sql.Int,h.id).query(`SELECT p.*,original.purpose refund_of_purpose,original.security_action refund_of_security_action,original.code refund_of_code,u.name user_name,v.name confirmed_name FROM payments p LEFT JOIN payments original ON original.id=p.refund_of_id JOIN users u ON u.id=p.user_id LEFT JOIN users v ON v.id=p.confirmed_by WHERE p.${c.fk}=@id ORDER BY p.id`)).recordset;
@@ -100,9 +100,13 @@ async function confirmMovement(tx,id,user,method='AVERAGE'){
     for(const l of lines){const d=h.items.find(d=>d.id===l[c.df]);if(!d||d.item_id!==l.item_id)throw httpError(409,'Dòng không còn thuộc đơn');if(d.bin_id!==l.bin_id)throw httpError(409,'Vị trí lần chờ khác đơn. Chỉnh sửa và lưu lại lần thực hiện trước khi xác nhận.');totals.set(d.id,(totals.get(d.id)||0)+(c.r?Number(l.paid_quantity):Number(l.quantity)));const v=await validateItemAndBin(tx,l.item_id,l.bin_id,h.warehouse_id);if(!v.item_valid||!v.bin_valid)throw httpError(409,'Danh mục đã ngừng hoạt động');}
     for(const [d,q]of totals)if(q>h.items.find(x=>x.id===d).remaining_quantity+1e-8)throw httpError(409,'Lượng lần này vượt phần còn lại của đơn');
     const snapshot=await captureStockPosting(tx,h.warehouse_id,lines);
+    const values=new Map();
     for(const l of lines){if(!c.r){const available=await getItemBinStock(tx,l.item_id,l.bin_id,m.operation_date)-await reservedQuantity(tx,l.item_id,l.bin_id,h.id);if(Number(l.quantity)>available+1e-8)throw httpError(409,`Không đủ hàng chưa giữ tại vị trí ${l.bin_id}: còn ${available}`);
-      const cost=await getWeightedAverageCost(tx,l.item_id,h.warehouse_id,m.operation_date);
-      if(!Number.isFinite(cost)||cost<0)throw httpError(409,'Không xác định được giá vốn');await tx.request().input('id',sql.Int,l.id).input('cost',sql.Decimal(18,2),money(cost)).query('UPDATE stock_movement_details SET cost_price=@cost WHERE id=@id');
+      if(!values.has(l.item_id))values.set(l.item_id,{...await getWarehouseValuation(tx,l.item_id,h.warehouse_id,m.operation_date)});
+      const state=values.get(l.item_id),cost=state.quantity>0?state.value/state.quantity:0;
+      const costValue=issueCostValue(Number(l.quantity),state);
+      if(!Number.isFinite(cost)||cost<0)throw httpError(409,'Không xác định được giá vốn');await tx.request().input('id',sql.Int,l.id).input('cost',sql.Decimal(18,2),money(cost)).input('value',sql.Decimal(18,2),costValue).query('UPDATE stock_movement_details SET cost_price=@cost,cost_value=@value WHERE id=@id');
+      state.quantity-=Number(l.quantity);state.value=money(state.value-costValue);
       await tx.request().input('id',sql.Int,l.goods_issue_detail_id).input('q',sql.Decimal(18,2),l.quantity).query('UPDATE goods_issue_details SET reserved_quantity=CASE WHEN reserved_quantity>@q THEN reserved_quantity-@q ELSE 0 END WHERE id=@id');
     }}
     await tx.request().input('id',sql.Int,id).input('user',sql.Int,user).query("UPDATE stock_movements SET operation_status='Confirmed',confirmed_by=@user,confirmed_at=GETDATE(),updated_at=GETDATE() WHERE id=@id");

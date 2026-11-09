@@ -6,6 +6,7 @@ const { buildCostingReport } = require('../costing-report');
 const { valueItemStock, money } = require('../stock-valuation');
 const { loadValuationData } = require('../valuation-data');
 const { renderReportFile } = require('../report-renderer');
+const { todayKey } = require('../business-date');
 
 
 // Render an authenticated user's report snapshot in memory only. No database writes.
@@ -38,7 +39,7 @@ function pagination(query) {
 }
 
 function filters(query) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayKey();
   const fromDate = dateValue(query.from_date, '1900-01-01', 'Từ ngày');
   const toDate = dateValue(query.to_date, today, 'Đến ngày');
   if (fromDate > toDate) {

@@ -14,6 +14,7 @@ async function checkSchema(executor) {
       COL_LENGTH('dbo.goods_receipts','revision_no') revision_no,
       COL_LENGTH('dbo.goods_issues','lifecycle_status') lifecycle_status,
       COL_LENGTH('dbo.stock_movement_details','cost_price') posted_cost,
+      COL_LENGTH('dbo.stock_movement_details','cost_value') posted_cost_value,
       COL_LENGTH('dbo.stock_movement_details','goods_receipt_detail_id') receipt_line,
       COL_LENGTH('dbo.stock_movement_details','goods_issue_detail_id') issue_line,
       COL_LENGTH('dbo.payments','security_action') security_action,

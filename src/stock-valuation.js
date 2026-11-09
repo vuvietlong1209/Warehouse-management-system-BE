@@ -3,6 +3,14 @@ const { sqlDateKey } = require('./validation');
 const EPSILON = 1e-8;
 const numeric = value => Number(value) || 0;
 const money = value => Math.round((value + Number.EPSILON) * 100) / 100;
+// Round the amount once, rather than multiplying a rounded display unit price.
+function issueCostValue(quantity, state) {
+  if (!(quantity > 0) || quantity > state.quantity + EPSILON || state.value < -EPSILON) {
+    throw valuationError('Không thể tính giá vốn: lượng hoặc giá trị tồn không hợp lệ.');
+  }
+  return Math.abs(quantity - state.quantity) <= EPSILON ? money(state.value)
+    : Math.min(money(state.value), money(quantity * state.value / state.quantity));
+}
 function valuationError(message) {
   const error = new Error(message);
   error.status = 409;
@@ -25,7 +33,8 @@ function valuationEvents(receipts, issues, adjustments) {
     || numeric(left.line_id) - numeric(right.line_id));
 }
 
-// Approved cost_price is the accounting source; count adjustments use book WAC.
+// Approved line cost_value is authoritative; older rows retain cost_price × quantity.
+// Count adjustments use book WAC, including the last known WAC after depletion.
 function valueItemStock(item, receipts, issues, adjustments, fromDate = '1900-01-01', options = {}) {
   const warehouses = new Map();
   const bins = new Map();
@@ -43,7 +52,8 @@ function valueItemStock(item, receipts, issues, adjustments, fromDate = '1900-01
     // Posting validation observes the same calculator as reports, including
     // zero-discrepancy counts (which are still committed stock snapshots).
     if (options.beforeMovement) {
-      options.beforeMovement(event, { average_cost: currentAverage, bin_quantity: binQuantity });
+      options.beforeMovement(event, { average_cost: currentAverage, bin_quantity: binQuantity,
+        quantity: state.quantity, value: money(state.value) });
     }
     let quantity;
     let value;
@@ -57,20 +67,22 @@ function valueItemStock(item, receipts, issues, adjustments, fromDate = '1900-01
       const requested = numeric(event.quantity_ordered);
       const unitCost = numeric(event.cost_price);
       quantity = -requested;
-      value = -money(requested * unitCost);
+      value = -money(event.cost_value == null ? requested * unitCost : Number(event.cost_value));
       revenue = requested * numeric(event.unit_price);
       if (event.date >= fromDate) lastSalePrice = numeric(event.unit_price);
     } else {
       quantity = numeric(event.adjustment);
       if (Math.abs(quantity) <= EPSILON) continue;
-      if (!(state.quantity > EPSILON)) throw valuationError(`Không xác định được giá trị kiểm kê cho ${label}.`);
+      if (!(state.quantity > EPSILON) && !(quantity > 0 && currentAverage > 0)) {
+        throw valuationError(`Không xác định được giá trị kiểm kê cho ${label}.`);
+      }
       value = quantity * currentAverage;
     }
     if (binQuantity + quantity < -EPSILON) throw valuationError(`Tồn kho âm khi định giá ${label}.`);
     bins.set(binKey, binQuantity + quantity);
     value = money(value);
     state.quantity += quantity;
-    state.value += value;
+    state.value = money(state.value + value);
     if (state.quantity < -EPSILON) throw valuationError(`Tồn kho âm khi định giá ${label}.`);
     if (state.quantity > EPSILON) state.last_unit_cost = state.value / state.quantity;
     movements.push({ type: event.type, date: event.date, quantity, value, revenue,
@@ -83,6 +95,7 @@ function valueItemStock(item, receipts, issues, adjustments, fromDate = '1900-01
         warehouse_id: event.warehouse_id, bin_id: event.bin_id });
       state.value = 0;
     }
+    if (state.value < -EPSILON) throw valuationError(`Giá trị tồn kho âm khi định giá ${label}.`);
   }
   const before = movements.filter(row => row.date < fromDate);
   const period = movements.filter(row => row.date >= fromDate);
@@ -106,4 +119,4 @@ function valueItemStock(item, receipts, issues, adjustments, fromDate = '1900-01
   };
 }
 
-module.exports = { valueItemStock, valuationEvents, money };
+module.exports = { valueItemStock, valuationEvents, money, issueCostValue };

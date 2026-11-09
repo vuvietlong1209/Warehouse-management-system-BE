@@ -160,26 +160,40 @@ router.post('/', async (req, res) => {
 // POST /api/items/import - Import nhiều sản phẩm từ Excel
 router.post('/import', async (req, res) => {
   const { items } = req.body;
-  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Danh sách sản phẩm rỗng' });
+  if (!Array.isArray(items) || items.length === 0 || items.length > 1000) return res.status(400).json({ error: 'Mỗi lần nhập cần từ 1 đến 1.000 dòng sản phẩm' });
   try {
-    const pool = await getPool();
-    const inserted = [];
-    for (const item of items) {
-      const { code, name, base_unit_id, status = true } = item;
-      if (!code || !name || !base_unit_id) continue;
-      try {
-        const result = await pool.request()
+    const result = await runSerializable(async transaction => {
+      await lockLedger(transaction);
+      const inserted = [], errors = [];
+      for (const [index, item] of items.entries()) {
+        const code = String(item?.code || '').trim(), name = String(item?.name || '').trim();
+        const base_unit_id = Number(item?.base_unit_id), status = item?.status ?? true;
+        let message = !code || code.length > 24 ? 'Mã sản phẩm phải từ 1 đến 24 ký tự'
+          : !name || name.length > 64 ? 'Tên sản phẩm phải từ 1 đến 64 ký tự'
+          : !Number.isInteger(base_unit_id) || base_unit_id <= 0 ? 'Đơn vị tính không hợp lệ'
+          : typeof status !== 'boolean' ? 'Trạng thái không hợp lệ' : '';
+        if (!message) {
+          const response = await transaction.request()
           .input('code', sql.NVarChar(24), code)
           .input('name', sql.NVarChar(64), name)
           .input('base_unit_id', sql.Int, base_unit_id)
           .input('status', sql.Bit, status ? 1 : 0)
-          .query(`INSERT INTO items (code, name, base_unit_id, status) OUTPUT INSERTED.* VALUES (@code, @name, @base_unit_id, @status)`);
-        inserted.push(result.recordset[0]);
-      } catch (innerErr) {
-        // Skip duplicates
+          .query(`IF NOT EXISTS(SELECT 1 FROM base_units WHERE id=@base_unit_id AND status=1)
+            SELECT N'Đơn vị tính không tồn tại hoặc đã ngừng hoạt động' AS import_error;
+            ELSE IF EXISTS(SELECT 1 FROM items WHERE code=@code)
+            SELECT N'Mã sản phẩm đã tồn tại' AS import_error;
+            ELSE INSERT INTO items (code, name, base_unit_id, status) OUTPUT INSERTED.* VALUES (@code, @name, @base_unit_id, @status)`);
+          message = response.recordset[0]?.import_error || '';
+          if (!message) inserted.push(response.recordset[0]);
+        }
+        if (message) errors.push({ row: index + 2, code, message });
       }
-    }
-    res.status(201).json({ inserted: inserted.length, items: inserted });
+      return { success: inserted.length > 0, total: items.length, inserted: inserted.length,
+        failed: errors.length, errors, items: inserted,
+        message: inserted.length ? `Đã nhập ${inserted.length}/${items.length} sản phẩm`
+          : `Không nhập được sản phẩm nào. ${errors.map(e => `Dòng ${e.row}: ${e.message}`).slice(0, 5).join('; ')}` };
+    });
+    res.status(result.success ? 201 : 422).json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

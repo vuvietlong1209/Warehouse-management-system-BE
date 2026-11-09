@@ -16,7 +16,7 @@ async function loadValuationData(executor, { toDate, warehouseId = null, itemId 
       FROM receipt_transaction_details d JOIN receipt_transactions h ON h.id=d.goods_receipt_id
       WHERE h.receipt_status='Confirmed' AND h.status=1 AND h.order_date<=@to_date
         AND (@warehouse_id IS NULL OR h.warehouse_id=@warehouse_id) AND (@item_id IS NULL OR d.item_id=@item_id);
-      SELECT d.item_id,d.bin_id,h.warehouse_id,d.quantity_ordered,d.unit_price,d.cost_price,
+      SELECT d.item_id,d.bin_id,h.warehouse_id,d.quantity_ordered,d.unit_price,d.cost_price,d.cost_value,
         h.order_date,h.ledger_order_id order_id,d.ledger_line_id line_id,h.confirmed_at,h.code document_code
       FROM issue_transaction_details d JOIN issue_transactions h ON h.id=d.goods_issue_id
       WHERE h.issue_status='Confirmed' AND h.status=1 AND h.order_date<=@to_date

@@ -100,6 +100,13 @@ async function getCountUnitCost(executor, itemId, warehouseId, asOfDate) {
   return state?.quantity > 0 ? state.value / state.quantity : state?.last_unit_cost || 0;
 }
 
+async function getWarehouseValuation(executor, itemId, warehouseId, asOfDate) {
+  const history = await loadValuationData(executor, { itemId, warehouseId, toDate: asOfDate });
+  if (!history.items.length) return { quantity: 0, value: 0 };
+  return valueItemStock(history.items[0], history.receipts, history.issues, history.adjustments)
+    .warehouses.get(warehouseId) || { quantity: 0, value: 0 };
+}
+
 async function validateItemAndBin(executor, itemId, binId, warehouseId) {
   const result = await requestFrom(executor)
     .input('item_id', sql.Int, itemId)
@@ -143,6 +150,7 @@ module.exports = {
   getBinStock,
   getWeightedAverageCost,
   getCountUnitCost,
+  getWarehouseValuation,
   validateItemAndBin,
   validateDocumentHeader,
 };
